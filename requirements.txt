@@ -1,0 +1,37 @@
+# ==============================================================================
+# Dependencies for PLANT Antigenic Cartography & Sequence Analysis
+# Tested on Python 3.12 (Linux x86_64, CUDA 12.4)
+# ==============================================================================
+
+# PyTorch & Deep Learning
+torch==2.5.1
+torchvision==0.20.1
+accelerate==1.13.0
+
+# Transformer Models & PLM
+transformers==4.41.2
+safetensors==0.7.0
+fair-esm==2.0.0
+tokenizers==0.19.1
+
+# Bioinformatics & Sequence Handling
+biopython==1.83
+
+# Scientific Computing & Data Processing
+numpy==1.26.4
+pandas==2.3.3
+scipy==1.18.1
+scikit-learn==1.5.0
+joblib==1.4.2
+
+# Visualisation & Interactive Plotting
+plotly==5.22.0
+matplotlib==3.10.8
+seaborn==0.13.2
+nbformat==5.9.2
+
+# Utilities
+tqdm==4.66.4
+requests==2.32.3
+packaging==24.1
+pyyaml==6.0.1

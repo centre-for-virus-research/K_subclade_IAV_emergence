@@ -1,0 +1,3 @@
+[submodule "external/PLANT"]
+	path = external/PLANT
+	url = https://github.com/TheSatoLab/PLANT.git
