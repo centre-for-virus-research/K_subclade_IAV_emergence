@@ -11,56 +11,38 @@ Install & inmport modules
 
 # %%
 import os
-import shutil
-import plotly
-import sys, os, glob
-import plotly.express as px
-import plotly.colors as pc
+import sys
+
 import joblib
-import pandas as pd
 import numpy as np
-
-from transformers import AutoTokenizer, EsmConfig
-from torch.utils.data import DataLoader
-
+import pandas as pd
+import plotly.colors as pc
 import plotly.express as px
 import plotly.graph_objects as go
-
-import nbformat
-from Bio import Align
-
 import torch
+from torch.utils.data import DataLoader
+from transformers import AutoTokenizer, EsmConfig
 
-repo_dir = "/home3/oml4h/hugging_face_downloads/PLANT_model/code"
-
-# Delete if the directory exists
-# if os.path.exists(repo_dir):
-#     shutil.rmtree(repo_dir)
-
-# # clone
-# !git clone -q https://github.com/TheSatoLab/PLANT.git $repo_dir
 script_dir = os.path.dirname(os.path.abspath(__file__))
 if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
-# Look for PLANT source: 1) local submodule external/PLANT/src, 2) PLANT_CODE_DIR env var, 3) cluster fallback
-submodule_plant_src = os.path.join(script_dir, "external", "PLANT", "src")
-env_plant_src = os.path.join(os.getenv("PLANT_CODE_DIR", ""), "src") if os.getenv("PLANT_CODE_DIR") else ""
-cluster_plant_src = os.path.join(repo_dir, "src")
+import plant_paths
 
-for p in [submodule_plant_src, env_plant_src, cluster_plant_src]:
-    if p and os.path.exists(p) and p not in sys.path:
-        sys.path.insert(0, p)
-        break
-
-if "/home3/oml4h/PLM_SARS-CoV-2" not in sys.path and os.path.exists("/home3/oml4h/PLM_SARS-CoV-2"):
-    sys.path.append("/home3/oml4h/PLM_SARS-CoV-2")
+# Every location below comes from an environment variable or the documented
+# repository-local default; see plant_paths.py. Nothing resolves to an absolute
+# path outside the repository, so a missing input fails loudly here rather than
+# silently embedding whatever happened to be on the machine.
+plant_src = plant_paths.resolve_plant_src()
+if str(plant_src) not in sys.path:
+    sys.path.insert(0, str(plant_src))
 
 from plant import TextDataset, tokenize_sequences, semanticESM, set_encoders, embed_sequences
 from Functions_HuggingFace import (
     plant_trim_to_target_length,
     plant_sequence_identity,
     plant_alignment_coverage_metrics,
+    plant_reference_window_has_ambiguity,
     plant_extract_year,
 )
 
@@ -71,23 +53,25 @@ print("Imported plant module OK.")
 scale_factor = 8
 # Repository ID on HF
 REPO_ID = "TheSatoLab-UTokyo/PLANT"
-SUBFOLDER = "variants/PLANT_fixed"
+SUBFOLDER = plant_paths.CHECKPOINT_SUBFOLDER
 
-# Background CSV: 1) local submodule, 2) BACKGROUND_CSV_PATH env var, 3) cluster fallback
-submodule_bg = os.path.join(script_dir, "external", "PLANT", "examples", "backgrounds.csv")
-BACKGROUND_CSV_PATH = os.getenv(
+# Historical background strains:  $BACKGROUND_CSV_PATH  or  external/PLANT/examples/
+BACKGROUND_CSV_PATH = str(plant_paths.resolve_file(
+    "the PLANT background strains CSV",
     "BACKGROUND_CSV_PATH",
-    submodule_bg if os.path.exists(submodule_bg) else "/home3/oml4h/hugging_face_downloads/PLANT_model/code/examples/backgrounds.csv"
-)
+    plant_paths.DEFAULT_BACKGROUND_CSV,
+    hint=plant_paths.SUBMODULE_HINT,
+))
 
-# Input data: check local data/PLANT_input_file.csv first, then fallback
-local_csv = os.path.join(script_dir, "data", "PLANT_input_file.csv")
-CSV_PATH = local_csv if os.path.exists(local_csv) else "/home3/oml4h/PLM_SARS-CoV-2/Sequences/PLANT_input_file.csv"
+# Sequences to embed:  $PLANT_INPUT_CSV  or  data/PLANT_input_file.csv
+CSV_PATH = str(plant_paths.resolve_file(
+    "the input sequence CSV",
+    "PLANT_INPUT_CSV",
+    plant_paths.DEFAULT_INPUT_CSV,
+))
 
-# Output directory: default to local results/PLANT_results or environment variable
-local_outdir = os.path.join(script_dir, "results", "PLANT_results")
-outdir = os.getenv("PLANT_OUTDIR", local_outdir)
-os.makedirs(outdir, exist_ok=True)
+# Outputs:  $PLANT_OUTDIR  or  results/PLANT_results  (created if absent)
+outdir = str(plant_paths.resolve_output_dir())
 """Load model"""
 # %%
 # from huggingface_hub import snapshot_download
@@ -103,43 +87,25 @@ os.makedirs(outdir, exist_ok=True)
 #     ],
 # )
 
-# Use local downloaded model or environment variable
-local_hf_dir = os.getenv("PLANT_MODEL_DIR", "/home3/oml4h/hugging_face_downloads/PLANT_model")
+# Model weights:  $PLANT_MODEL_DIR  or  models/PLANT_model
+local_hf_dir = plant_paths.resolve_model_dir(flag=None)
 # %%
 print("HF snapshot dir:", local_hf_dir)
 
-CKPT_DIR = os.path.join(local_hf_dir, SUBFOLDER)
+CKPT_DIR = str(plant_paths.resolve_checkpoint_dir(local_hf_dir, SUBFOLDER))
 print("Checkpoint dir:", CKPT_DIR)
 
-single_path = os.path.join(CKPT_DIR, "model.safetensors")
-shard_paths = sorted(glob.glob(os.path.join(CKPT_DIR, "model-*-of-*.safetensors")))
-
-assert (os.path.exists(single_path) or len(shard_paths) > 0), \
-    f"safetensors not found under {CKPT_DIR}. Check uploaded filenames."
-
-# ===== Automatically detect OneHotEncoder (joblib) =====
-def find_file(patterns):
-    for pat in patterns:
-        paths = glob.glob(os.path.join(local_hf_dir, "**", pat), recursive=True)
-        if len(paths) > 0:
-            return paths[0]
-    return None
-
-virus_enc_path = find_file(["virus_encoder.joblib", "**/virus_encoder.joblib"])
-ref_enc_path   = find_file(["ref_encoder.joblib",   "**/ref_encoder.joblib"])
-vp_enc_path    = find_file(["vp_encoder.joblib",    "**/vp_encoder.joblib"])
-rp_enc_path    = find_file(["rp_encoder.joblib",    "**/rp_encoder.joblib"])
-
-for p, name in [(virus_enc_path,"virus"), (ref_enc_path,"ref"), (vp_enc_path,"vp"), (rp_enc_path,"rp")]:
-    assert p is not None, f"{name}_encoder.joblib not found. Please confirm it is uploaded to the HF repo."
-    print(f"Found {name} encoder:", p)
+# ===== OneHotEncoders, taken from beside the weights =====
+encoder_paths = plant_paths.resolve_encoders(local_hf_dir, CKPT_DIR)
+for name, path in encoder_paths.items():
+    print(f"Found {name} encoder:", path)
 
 # Load joblib and inject into model
 
-ohe_v  = joblib.load(virus_enc_path)
-ohe_r  = joblib.load(ref_enc_path)
-ohe_vp = joblib.load(vp_enc_path)
-ohe_rp = joblib.load(rp_enc_path)
+ohe_v  = joblib.load(encoder_paths["virus"])
+ohe_r  = joblib.load(encoder_paths["ref"])
+ohe_vp = joblib.load(encoder_paths["vp"])
+ohe_rp = joblib.load(encoder_paths["rp"])
 set_encoders(ohe_v, ohe_r, ohe_vp, ohe_rp)
 print("Encoders set.")
 
@@ -193,6 +159,19 @@ print(f"Sequences after trimming filter: {len(df)} (removed {before_trim_filter 
 # Update seq column with trimmed sequences
 df["seq"] = df["seq_trimmed"]
 df = df.drop(columns=["seq_trimmed"])
+
+
+# filtering for invalid amino acids in the raw sequence. Trimming projects onto
+# the reference and overwrites unaligned termini with reference residues, so a
+# masked terminus is already healed by the time the filter below runs. Only the
+# region the reference spans is screened: full-length HA carries ambiguity in
+# HA2 that never reaches the projection.
+before_raw_ambiguity_filter = len(df)
+df = df[~df["seq_raw"].apply(lambda s: plant_reference_window_has_ambiguity(s, REFERENCE_SEQ))]
+print(
+    f"Sequences after raw ambiguity filter: {len(df)} "
+    f"(removed {before_raw_ambiguity_filter - len(df)})"
+)
 
 
 # filtering for invalid amino acids

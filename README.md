@@ -24,14 +24,33 @@ This repository contains data and analysis scripts from **(2026) Dee K, Imrie RM
 ![betareg](https://img.shields.io/badge/betareg-3.2.4-1abc9c)
 ![emmeans](https://img.shields.io/badge/emmeans-2.0.1-1abc9c)
 ![viridisLite](https://img.shields.io/badge/viridisLite-0.4.2-1abc9c)
+![svglite](https://img.shields.io/badge/svglite-2.2.2-1abc9c)
 
 ![Python](https://img.shields.io/badge/Python-3.12-3776ab?logo=python)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.5.1-ee4c2c?logo=pytorch)
 ![Transformers](https://img.shields.io/badge/Transformers-4.41.2-ffcc4d?logo=huggingface)
 
+### One environment for both halves
+
+`environment.yml` builds a single conda environment containing R, every R package the
+scripts load, and the pinned Python stack:
+
+```bash
+conda env create -f environment.yml
+conda activate plant_env
+```
+
+To add the R side to an environment that already exists:
+
+```bash
+conda install -n plant_env -c conda-forge r-base=4.5 r-tidyverse r-here \
+  r-betareg r-emmeans r-patchwork r-minpack.lm r-plotrix r-viridislite r-svglite r-testthat
+```
+
 ### Running R Scripts
 
-The included script `scripts/00_setup.R` can be used to install all R package dependencies at once.
+The included script `scripts/00_setup.R` can be used to install all R package dependencies at once
+(use it when working outside the conda environment above).
 
 Scripts in this repository use the `here` library to dynamically set paths. For this to work correctly, RStudio must be opened by double-clicking on one of the files in `scripts/`. Path errors will appear if RStudio was first opened using a shortcut or a script from a different location.
 
@@ -54,8 +73,28 @@ Scripts in this repository use the `here` library to dynamically set paths. For 
 | `Plant.run.py` | Projects A/H3N2 HA sequences into 3D antigenic space, computes distances to reference strains, and creates interactive 3D visualizations |
 | `Plant_batch_fastas.py` | Batch CLI utility to align, QC, and compute 3D PLANT antigenic embeddings for directories of FASTA files |
 | `Functions_HuggingFace.py` | Sequence alignment, reference-based trimming, and quality control helper utilities |
+| `plant_paths.py` | Resolves model, input and output locations from the command line, environment, or repository defaults |
 | `external/PLANT` | Git submodule pointing to [TheSatoLab/PLANT](https://github.com/TheSatoLab/PLANT) (model architecture and historical background dataset) |
 | `requirements.txt` | Pinned Python package dependencies for PLANT environment reproduction |
+| `environment.yml` | Single conda environment covering both the R and Python dependencies |
+| `tests/` | Test suite for the R and Python code and the conda environment (see [`tests/README.md`](tests/README.md)) |
+
+---
+
+## Tests
+
+```bash
+conda activate plant_env
+
+bash tests/run_all.sh              # Python + R
+bash tests/run_all.sh --fast       # skip slow tests
+```
+
+The suite checks the alignment and QC helpers, the batch embedding CLI, the contract with
+the vendored PLANT package, the data files the analyses read, the R model-selection and
+curve-fitting logic, and the conda environment itself (pinned versions, imports, CUDA, and
+the R packages). [`tests/README.md`](tests/README.md) documents the layout and records the
+defects the suite found.
 
 ---
 
@@ -121,7 +160,17 @@ The scripts look for this checkpoint by default in `./models/PLANT_model` (or cu
 
 ### 3. Python Environment & Dependencies
 
-A tested, pinned [requirements.txt](file:///home3/oml4h/K_subclade_IAV_emergence/requirements.txt) is provided in the repository root. To recreate the environment:
+A tested, pinned [requirements.txt](requirements.txt) is provided in the repository root.
+
+The simplest route is [environment.yml](environment.yml), which installs the R and Python
+dependencies together:
+
+```bash
+conda env create -f environment.yml
+conda activate plant_env
+```
+
+To build the Python side on its own:
 
 ```bash
 # 1. Create and activate a dedicated conda environment
@@ -132,12 +181,26 @@ conda activate plant_env
 pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu124
 ```
 
+Drop the `--extra-index-url` for a CPU-only install; the pipeline falls back to CPU and
+disables fp16 automatically.
+
 #### Optional Environment Variables
 
-The scripts support the following environment variables if you store models or datasets in non-default directories:
-- `PLANT_MODEL_DIR`: Directory containing downloaded Hugging Face PLANT checkpoints (default: `./models/PLANT_model` containing `variants/PLANT_fixed`).
-- `BACKGROUND_CSV_PATH`: Path to historical strains dataset (default: `./external/PLANT/examples/backgrounds.csv`).
-- `PLANT_OUTDIR`: Output directory for generated CSVs and HTML visualizations (default: `./results/PLANT_results`).
+Use these if you keep models or datasets outside the repository.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PLANT_MODEL_DIR` | `./models/PLANT_model` | Directory containing `variants/PLANT_fixed`. |
+| `PLANT_CODE_DIR` | `./external/PLANT/src` | The `plant` package source. |
+| `BACKGROUND_CSV_PATH` | `./external/PLANT/examples/backgrounds.csv` | Historical strains dataset. |
+| `PLANT_INPUT_CSV` | `./data/PLANT_input_file.csv` | Sequences for `Plant.run.py` to embed. |
+| `PLANT_OUTDIR` | `./results/PLANT_results` | Output directory (created if absent). |
+
+Each location is resolved by [`plant_paths.py`](plant_paths.py) with one explicit precedence:
+**command line → environment variable → repository default**. The first of those that is
+*set* wins and must exist; there is no fallback chain and nothing ever resolves to an
+absolute path outside the repository. A missing location stops the run with a message
+naming the variable to set, so a stale path cannot quietly feed the wrong data to the model.
 
 ---
 
@@ -165,8 +228,16 @@ The scripts support the following environment variables if you store models or d
 
 **Execution:**
 ```bash
+# Weights in the documented default location (./models/PLANT_model)
+python Plant.run.py
+
+# Weights elsewhere
+export PLANT_MODEL_DIR=/path/to/PLANT_model
 python Plant.run.py
 ```
+
+Nothing resolves to a path outside the repository, so if the checkpoint is not where the
+script looked it stops immediately and names the variable to set rather than carrying on.
 
 **Outputs generated:**
 - `PLANT_input_filtered.csv`: Quality-filtered and trimmed sequence dataset.
@@ -191,13 +262,23 @@ python Plant.run.py
 ```bash
 python Plant_batch_fastas.py \
   --input-dir /path/to/fasta_directory \
-  --output-dir /path/to/output_directory \
+  --output-dir results/batch_fastas \
+  --model-dir /path/to/PLANT_model \
   --batch-size 64 \
   --suffixes "*.fa" "*.fasta" "*.faa"
 ```
 
 **Options:**
-- `--input-dir`: Path to folder containing input FASTA files.
-- `--output-dir`: Path to directory where output CSV files will be saved.
+- `--input-dir`: **Required.** Folder containing the input FASTA files. There is deliberately
+  no default: this script embeds whatever it is given through an influenza HA model, so the
+  corpus has to be named explicitly.
+- `--output-dir`: Directory for the output CSVs (default: `results/batch_fastas`).
+- `--model-dir`: Directory containing `variants/PLANT_fixed`. Overrides `$PLANT_MODEL_DIR`.
 - `--batch-size`: Batch size for embedding inference (default: `64`).
 - `--suffixes`: File extension glob patterns to search for (default: `*.fa *.fasta *.faa`).
+
+> [!NOTE]
+> Embedding runs in FP16 on GPU. Results are bit-identical when rerun with the same settings,
+> but differ by about one FP16 ulp (~4 × 10⁻³ on the scaled coordinates) across different
+> `--batch-size` values, because cuBLAS picks different kernels. Fix `--batch-size` when
+> comparing coordinate tables.

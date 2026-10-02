@@ -21,12 +21,18 @@ library(here)
 library(emmeans)
 library(viridisLite)
 
-# ----- 0.3. Load Data ---------------------------------------------------------
+# ----- 0.3. Output Directory --------------------------------------------------
+
+# ggsave() errors on a missing directory rather than creating one, so the
+# figures written in section 5 need their destination to exist first.
+dir.create(here("figures"), showWarnings = FALSE, recursive = TRUE)
+
+# ----- 0.4. Load Data ---------------------------------------------------------
 
 data_neutralisation <- read_csv(here("data", "neutralisation_75.csv"))
 data_samples <- read_csv(here("data", "sample_metadata.csv"), col_types = cols(SampleID = col_character()))
 
-# ----- 0.4. Convenience Functions ---------------------------------------------
+# ----- 0.5. Convenience Functions ---------------------------------------------
 
 theme_base <- theme_bw() +
   theme(aspect.ratio = 1,

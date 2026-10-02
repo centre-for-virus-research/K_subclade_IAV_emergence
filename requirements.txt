@@ -20,7 +20,7 @@ biopython==1.83
 # Scientific Computing & Data Processing
 numpy==1.26.4
 pandas==2.3.3
-scipy==1.18.1
+scipy==1.17.1
 scikit-learn==1.5.0
 joblib==1.4.2
 

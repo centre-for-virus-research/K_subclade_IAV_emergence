@@ -164,8 +164,11 @@ p4 <- ggplot(data_comp) +
   theme_base +
   theme(axis.text.x = element_blank(),
         aspect.ratio = 1/2) +
+  # y is -IC50 = log2(dilution), so a break at 4 is a titre of 1:16. The labels
+  # must therefore ascend with the breaks (they were previously reversed, which
+  # printed 1:4096 against the 1:16 tick and vice versa).
   scale_y_continuous(limits = c(3, 12), breaks = seq(4, 12, 2), minor_breaks = seq(4, 13, 1), guide = guide_axis(minor.ticks = TRUE),
-                     labels = rev(paste0("1:", 2^seq(4, 12, 2)))) +
+                     labels = paste0("1:", 2^seq(4, 12, 2))) +
   scale_fill_manual(values = c("#4677AA", "#DECC76", "#CC6476"),
                     labels = c("H3N2/2022-Vac",
                                "H3N2/2024-J",

@@ -1,0 +1,57 @@
+# ==============================================================================
+# Single conda environment for both halves of this repository.
+#
+#   conda env create -f environment.yml
+#   conda activate plant_env
+#
+# The Python side reproduces the PLANT / ESM-2 embedding pipeline; the R side
+# reproduces the neutralisation and IC50 analyses in scripts/. Keeping them in
+# one environment means `Rscript` and `python` on the same PATH both work on a
+# fresh checkout, and the test suite can validate them together.
+#
+# To add the R packages to an environment that already exists:
+#
+#   conda install -n plant_env -c conda-forge r-base=4.5 r-tidyverse r-here \
+#     r-betareg r-emmeans r-patchwork r-minpack.lm r-plotrix r-viridislite r-svglite r-testthat
+# ==============================================================================
+
+name: plant_env
+
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+
+dependencies:
+  - python=3.12
+
+  # --- R and the packages scripts/00_setup.R installs ------------------------
+  # Versions resolved by conda-forge on 2026-10-02:
+  #   R 4.5.3, tidyverse 2.0.0, here 1.0.2, betareg 3.2.6, emmeans 2.0.4,
+  #   patchwork 1.3.2, minpack.lm 1.2.4, plotrix 3.8.14, viridisLite 0.4.3,
+  #   svglite 2.2.2
+  #
+  # These are left unpinned beyond r-base so a fresh solve stays possible;
+  # the README records the versions used for the published analysis.
+  - r-base=4.5
+  - r-tidyverse
+  - r-here
+  - r-betareg
+  - r-emmeans
+  - r-patchwork
+  - r-minpack.lm
+  - r-plotrix
+  - r-viridislite
+  - r-svglite          # ggsave() needs it to write the .svg figure panels
+
+  # --- Test runners ----------------------------------------------------------
+  - r-testthat
+  - pytest
+
+  # --- Python dependencies ---------------------------------------------------
+  # Pinned in requirements.txt. The extra index supplies the CUDA 12.4 builds of
+  # torch and torchvision; drop it for a CPU-only install.
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu124
+      - -r requirements.txt

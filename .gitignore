@@ -3,3 +3,7 @@ __pycache__/
 *$py.class
 .ipynb_checkpoints/
 .DS_Store
+.pytest_cache/
+Rplots.pdf
+figures/
+results/

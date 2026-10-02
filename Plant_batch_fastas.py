@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import glob
-import os
 import sys
 from pathlib import Path
 
@@ -15,34 +13,31 @@ from transformers import AutoTokenizer, EsmConfig
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-SUBMODULE_PLANT_DIR = SCRIPT_DIR / "external" / "PLANT"
-REPO_ROOT = Path("/home3/oml4h/PLM_SARS-CoV-2")
-
-default_plant_code = SUBMODULE_PLANT_DIR if SUBMODULE_PLANT_DIR.exists() else Path("/home3/oml4h/hugging_face_downloads/PLANT_model/code")
-PLANT_CODE_DIR = Path(os.getenv("PLANT_CODE_DIR", str(default_plant_code)))
-
-default_hf_dir = SCRIPT_DIR / "models" / "PLANT_model" if (SCRIPT_DIR / "models" / "PLANT_model").exists() else Path("/home3/oml4h/hugging_face_downloads/PLANT_model")
-LOCAL_HF_DIR = Path(os.getenv("PLANT_MODEL_DIR", str(default_hf_dir)))
-
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
-if str(PLANT_CODE_DIR / "src") not in sys.path and (PLANT_CODE_DIR / "src").exists():
-    sys.path.insert(0, str(PLANT_CODE_DIR / "src"))
-if str(REPO_ROOT) not in sys.path and REPO_ROOT.exists():
-    sys.path.append(str(REPO_ROOT))
+
+import plant_paths
+
+# See plant_paths.py: each location is taken from the command line, else the
+# documented environment variable, else the repository-local default. No
+# location resolves to an absolute path outside the repository, so pointing this
+# at the wrong corpus has to be done deliberately rather than by accident.
+PLANT_SRC_DIR = plant_paths.resolve_plant_src()
+if str(PLANT_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(PLANT_SRC_DIR))
 
 from plant import TextDataset, embed_sequences, semanticESM, set_encoders, tokenize_sequences
-from Functions_HuggingFace import plant_alignment_coverage_metrics, plant_sequence_identity, plant_trim_to_target_length
+from Functions_HuggingFace import (
+    plant_alignment_coverage_metrics,
+    plant_reference_window_has_ambiguity,
+    plant_sequence_identity,
+    plant_trim_to_target_length,
+)
 
 
-SUBFOLDER = "variants/PLANT_fixed"
+SUBFOLDER = plant_paths.CHECKPOINT_SUBFOLDER
 MODEL_NAME = "facebook/esm2_t33_650M_UR50D"
-DEFAULT_INPUT_DIR = SCRIPT_DIR / "data" / "fastas"
-DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "results" / "batch_fastas"
-FALLBACK_INPUT_DIR = REPO_ROOT / "Sequences/SC2_by_year_for_PLANT/Transfer-6tvEN29f8yk9AJZ4"
-
-INPUT_FASTA_DIR = FALLBACK_INPUT_DIR if FALLBACK_INPUT_DIR.exists() else DEFAULT_INPUT_DIR
-OUTPUT_DIR = DEFAULT_OUTPUT_DIR
+DEFAULT_OUTPUT_DIR = plant_paths.DEFAULT_BATCH_OUTPUT_DIR
 
 REFERENCE_SEQ = (
     "QKIPGNDNSTATLCLGHHAVPNGTIVKTITNDRIEVTNATELVQNSSIGKICNSPHQILDGGNCTLIDALLGDPQCDGFQNKEWDLFVERSRANSSCYPYDVPDYASLRSLVASSGTLEFKDESFNWTGVKQNGKSSACKRGSSSSFFSRLNWLTSLNNIYPAQNVTMPNKEQFDKLYIWGVHHPDTDKNQFSLFAQSSGRITVSTTRSQQAVIPNIGSRPRVRDIPSRISIYWTIVKPGDILLINSTGNLIAPRGYFKIRSGKSSIMRSDAPIGECKSECITPNGSIPNDKPFQNVNRITYGACPRYVKQSTLKLATGMRNVPEKQTR"
@@ -56,51 +51,49 @@ ALIGN_REF_COVERAGE_FAIL = 0.95
 INVALID_AA_REGEX = "X|B|\\*"
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run PLANT embeddings for every FASTA in a directory and write one CSV per input FASTA."
-        )
+        ),
+        epilog=(
+            "--input-dir is required on purpose: this script embeds whatever it is given "
+            "through an influenza HA model, so the corpus must be named explicitly."
+        ),
     )
-    parser.add_argument("--input-dir", type=Path, default=INPUT_FASTA_DIR, help="Path to input directory containing FASTA files.")
-    parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR, help="Path to output directory for CSV coordinates.")
+    parser.add_argument(
+        "--input-dir",
+        type=Path,
+        required=True,
+        help="Directory containing the FASTA files to embed (required).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help=f"Directory for the per-FASTA coordinate CSVs (default: {DEFAULT_OUTPUT_DIR}).",
+    )
+    parser.add_argument(
+        "--model-dir",
+        type=Path,
+        default=None,
+        help="Directory containing variants/PLANT_fixed. Overrides $PLANT_MODEL_DIR.",
+    )
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="DataLoader batch size.")
     parser.add_argument("--suffixes", nargs="+", default=["*.fa", "*.fasta", "*.faa"], help="FASTA file extensions to match.")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def find_file(patterns: list[str]) -> str | None:
-    for pattern in patterns:
-        matches = glob.glob(str(LOCAL_HF_DIR / "**" / pattern), recursive=True)
-        if matches:
-            return matches[0]
-    return None
-
-
-def load_plant_runtime() -> tuple[AutoTokenizer, semanticESM, torch.device, bool]:
-    ckpt_dir = LOCAL_HF_DIR / SUBFOLDER
-    single_path = ckpt_dir / "model.safetensors"
-    shard_paths = sorted(glob.glob(str(ckpt_dir / "model-*-of-*.safetensors")))
-    assert single_path.exists() or shard_paths, f"safetensors not found under {ckpt_dir}"
-
-    virus_enc_path = find_file(["virus_encoder.joblib"])
-    ref_enc_path = find_file(["ref_encoder.joblib"])
-    vp_enc_path = find_file(["vp_encoder.joblib"])
-    rp_enc_path = find_file(["rp_encoder.joblib"])
-
-    for path_value, encoder_name in [
-        (virus_enc_path, "virus"),
-        (ref_enc_path, "ref"),
-        (vp_enc_path, "vp"),
-        (rp_enc_path, "rp"),
-    ]:
-        assert path_value is not None, f"{encoder_name}_encoder.joblib not found under {LOCAL_HF_DIR}"
+def load_plant_runtime(model_dir: Path | None = None) -> tuple[AutoTokenizer, semanticESM, torch.device, bool]:
+    local_hf_dir = plant_paths.resolve_model_dir(model_dir)
+    ckpt_dir = plant_paths.resolve_checkpoint_dir(local_hf_dir, SUBFOLDER)
+    encoder_paths = plant_paths.resolve_encoders(local_hf_dir, ckpt_dir)
 
     set_encoders(
-        joblib.load(virus_enc_path),
-        joblib.load(ref_enc_path),
-        joblib.load(vp_enc_path),
-        joblib.load(rp_enc_path),
+        joblib.load(encoder_paths["virus"]),
+        joblib.load(encoder_paths["ref"]),
+        joblib.load(encoder_paths["vp"]),
+        joblib.load(encoder_paths["rp"]),
     )
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
@@ -140,6 +133,16 @@ def trim_and_filter_sequences(df: pd.DataFrame) -> pd.DataFrame:
         lambda seq: plant_trim_to_target_length(seq, REFERENCE_SEQ, TARGET_LENGTH, return_start_pos=False)
     )
     working = working[working["seq"].notna()].copy()
+
+    if working.empty:
+        return working
+
+    # Screen the raw sequence as well: projection overwrites unaligned termini
+    # with reference residues, so a terminal X run is gone before the filter on
+    # the projected string below can see it.
+    working = working[
+        ~working["seq_raw"].apply(lambda seq: plant_reference_window_has_ambiguity(seq, REFERENCE_SEQ))
+    ].copy()
 
     if working.empty:
         return working
@@ -222,14 +225,20 @@ def process_fasta_file(
 
 def main() -> None:
     args = parse_args()
+
+    if not args.input_dir.is_dir():
+        raise FileNotFoundError(f"--input-dir is not a directory: {args.input_dir}")
+
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     fasta_paths = iter_fasta_paths(args.input_dir, args.suffixes)
     if not fasta_paths:
-        raise FileNotFoundError(f"No FASTA files found in {args.input_dir}")
+        raise FileNotFoundError(
+            f"No FASTA files found in {args.input_dir} matching {' '.join(args.suffixes)}"
+        )
 
-    print(f"Loading PLANT runtime from {LOCAL_HF_DIR}...")
-    tokenizer, model, device, use_fp16 = load_plant_runtime()
+    print(f"Reading FASTAs from: {args.input_dir}")
+    tokenizer, model, device, use_fp16 = load_plant_runtime(args.model_dir)
     print(f"Running on device: {device}")
     print(f"Found {len(fasta_paths)} FASTA files in {args.input_dir}")
 

@@ -23,6 +23,7 @@
 # minpack.lm   1.2.4
 # plotrix      3.8.13
 # viridisLite  0.4.2
+# svglite      2.2.2
 
 # ------------------------------------------------------------------------------
 # ----- 1. Install Packages ----------------------------------------------------
@@ -30,7 +31,10 @@
 
 # ----- 1.1. Specify Packages --------------------------------------------------
 
-packages <- c("tidyverse", "here", "betareg", "emmeans", "patchwork", "minpack.lm", "plotrix", "viridisLite")
+# Note: svglite is not loaded with library() by any script, but ggsave() requires
+#       it to write the .svg figure panels in 01_neutralisation_analysis.R.
+
+packages <- c("tidyverse", "here", "betareg", "emmeans", "patchwork", "minpack.lm", "plotrix", "viridisLite", "svglite")
 
 # ----- 1.2. Install Packages --------------------------------------------------
 
