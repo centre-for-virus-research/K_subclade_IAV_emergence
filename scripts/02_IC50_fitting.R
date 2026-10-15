@@ -8,8 +8,8 @@
 
 # ----- 0.1. Description -------------------------------------------------------
 
-# The following script fits and reviews four-parameter logistic curves to
-# neutralisation dilution-series data to estimate IC50 values.
+# The following script reviews neutralisation dilution-series data and fits
+# category-specific four-parameter logistic curves to estimate IC50 values.
 
 # ----- 0.2. Dependencies ------------------------------------------------------
 
@@ -24,10 +24,10 @@ options(scipen = 999)
 theme_pub <- function() {
   theme_classic(ink = "#212121") +
     theme(panel.grid.minor = element_line(color = "#f4f5f8"),
-      panel.grid.major = element_line(color = "#eceff4"),
-      axis.ticks.length = unit(-3, "pt"),
-      axis.minor.ticks.length = unit(-2, "pt"),
-      strip.background = element_rect(fill = "#eceff4", linewidth = 0.5))
+          panel.grid.major = element_line(color = "#eceff4"),
+          axis.ticks.length = unit(-3, "pt"),
+          axis.minor.ticks.length = unit(-2, "pt"),
+          strip.background = element_rect(fill = "#eceff4", linewidth = 0.5))
 }
 
 # ------------------------------------------------------------------------------
@@ -51,30 +51,25 @@ ggplot(data_bio) +
   theme_pub() +
   theme(aspect.ratio = 1)
 
-# ----- 1.2. Attempt to fit logistic curves ------------------------------------
+# ----- 1.2. Model Constraints -------------------------------------------------
 
 BottomMin <- -50
-BottomMax <- 40
+BottomMax <- 100
 
-TopMin <- 60
+TopMin <- -50
 TopMax <- 100
 
 IC50Min <- -20
 IC50Max <- -4
 
 SlopeMin <- 0.6
-SlopeMax <- 2
+SlopeMax <- 2.5
 
 combinations <- distinct(data_bio, Sample, Virus)
 
-fits <- list()
+# ----- 1.3. Review and Fit Curves ---------------------------------------------
 
-fit_summary <- mutate(combinations,
-                      Converged = FALSE,
-                      Bottom = NA,
-                      Top = NA,
-                      IC50 = NA,
-                      Slope = NA)
+curve_parameters <- transmute(combinations, SampleID = Sample, Virus, Category = NA, Lower = NA, Upper = NA, IC50 = NA, Slope = NA)
 
 for (i in seq_len(nrow(combinations))) {
   
@@ -84,132 +79,173 @@ for (i in seq_len(nrow(combinations))) {
   data_i <- filter(data_bio, Sample == sample_i, Virus == virus_i) %>%
     arrange(DilutionLog2)
   
-  upper_i <- which.max(data_i$DilutionLog2)
+  minY <- min(data_i$u_Neut, na.rm = TRUE)
+  maxY <- max(data_i$u_Neut, na.rm = TRUE)
   
-  upperX <- data_i$DilutionLog2[upper_i]
-  upperY <- data_i$u_Neut[upper_i]
+  minY_bound <- max(minY, BottomMin)
+  maxY_bound <- min(maxY, TopMax)
   
-  epsilon <- 0.001
+  xmin <- min(data_i$DilutionLog2, na.rm = TRUE)
+  xmax <- max(data_i$DilutionLog2, na.rm = TRUE)
   
-  BottomMax_i <- min(BottomMax, upperY - epsilon)
-  TopMin_i <- max(TopMin, upperY + epsilon)
-  
-  if (BottomMax_i > BottomMin && TopMin_i < TopMax) {
-    
-    fit_i <- tryCatch(nlsLM(u_Neut ~ Bottom + (Top - Bottom) * plogis((DilutionLog2 - (upperX - qlogis((upperY - Bottom) / (Top - Bottom)) / Slope)) * Slope), data = data_i, start = list(Bottom = pmin(pmax(min(data_i$u_Neut), BottomMin), BottomMax_i), Top = pmin(pmax(max(data_i$u_Neut), TopMin_i), TopMax), Slope = 1), lower = c(Bottom = BottomMin, Top = TopMin_i, Slope = SlopeMin), upper = c(Bottom = BottomMax_i, Top = TopMax, Slope = SlopeMax), control = nls.lm.control(maxiter = 1000)), error = function(e) NULL)
-    
-  } else {
-    
-    fit_i <- NULL
-  }
-  
-  fit_name <- paste(sample_i, virus_i, sep = "_")
-  fits[[fit_name]] <- fit_i
-  
-  if (!is.null(fit_i)) {
-    
-    coefs <- coef(fit_i)
-    
-    Bottom_i <- unname(coefs["Bottom"])
-    Top_i <- unname(coefs["Top"])
-    Slope_i <- unname(coefs["Slope"])
-    
-    IC50_i <- upperX - qlogis((upperY - Bottom_i) / (Top_i - Bottom_i)) / Slope_i
-    
-    if (IC50_i >= IC50Min && IC50_i <= IC50Max) {
-      
-      fit_summary$Converged[i] <- TRUE
-      
-      fit_summary[i, c("Bottom", "Top", "IC50", "Slope")] <- list(Bottom_i, Top_i, IC50_i, Slope_i)
-    }
-  }
-}
-
-
-# ----- 1.3. Review Curves ------------------------------------------------------
-
-curve_parameters <- transmute(combinations,
-                              SampleID = Sample,
-                              Virus,
-                              Verdict = NA,
-                              Lower = NA,
-                              Upper = NA,
-                              IC50 = NA,
-                              Slope = NA)
-
-for (i in seq_len(nrow(combinations))) {
-  
-  sample_i <- combinations$Sample[i]
-  virus_i <- combinations$Virus[i]
-  
-  data_i <- filter(data_bio, Sample == sample_i, Virus == virus_i) %>%
-    arrange(DilutionLog2)
-  
-  if (fit_summary$Converged[i]) {
-    
-    curve_i <- tibble(DilutionLog2 = seq(min(data_i$DilutionLog2), max(data_i$DilutionLog2), length.out = 200)) %>%
-      mutate(u_Neut = fit_summary$Bottom[i] +
-               (fit_summary$Top[i] - fit_summary$Bottom[i]) /
-               (1 + exp(-(DilutionLog2 - fit_summary$IC50[i]) * fit_summary$Slope[i])))
-    
-  } else {
-    curve_i <- NULL
-  }
+  plot_ymin <- min(-50, floor(minY / 10) * 10 - 5)
   
   p <- ggplot(data_i) +
     geom_point(aes(x = DilutionLog2, y = u_Neut)) +
-    scale_y_continuous(limits = c(-50, 100)) +
-    labs(title = paste0(sample_i, " ", virus_i, " — ", i, " / ", nrow(combinations)), subtitle = ifelse(fit_summary$Converged[i], "Logistic fit converged", "Logistic fit did not converge")) +
+    scale_y_continuous(limits = c(plot_ymin, 100)) +
+    labs(title = paste0(sample_i, " ", virus_i, " — ", i, " / ", nrow(combinations))) +
     theme_pub() +
     theme(aspect.ratio = 1)
-  
-  if (!is.null(curve_i)) {
-    p <- p +
-      geom_line(data = curve_i, aes(x = DilutionLog2, y = u_Neut), linewidth = 0.8)
-  }
   
   print(p)
   
   repeat {
     
-    choice <- readline("1 = curved, 2 = flatten low, 3 = flatten high: ")
+    choice <- readline("1 = fully observed, 2 = lower observed, 3 = upper observed, 4 = flattened low, 5 = flattened high: ")
     
-    if (!choice %in% c("1", "2", "3")) {
-      message("Please enter 1, 2 or 3.")
+    if (!choice %in% c("1", "2", "3", "4", "5")) {
+      message("Please enter 1, 2, 3, 4 or 5.")
       next
     }
     
-    if (choice == "1" && !fit_summary$Converged[i]) {
-      message("Logistic fit did not converge. Choose flatten low or flatten high.")
-      next
+    fit_i <- NULL
+    
+    # Fully observed
+    if (choice == "1") {
+      
+      BottomLower_i <- max(BottomMin, minY_bound - 5)
+      BottomUpper_i <- min(BottomMax, minY_bound + 5)
+      
+      TopLower_i <- max(TopMin, maxY_bound - 5)
+      TopUpper_i <- min(TopMax, maxY_bound + 5)
+      
+      midpoint_i <- ((BottomLower_i + BottomUpper_i) / 2 +
+                       (TopLower_i + TopUpper_i) / 2) / 2
+      
+      IC50Start_i <- data_i$DilutionLog2[
+        which.min(abs(data_i$u_Neut - midpoint_i))
+      ]
+      
+      IC50Start_i <- pmin(pmax(IC50Start_i, xmin), xmax)
+      
+      fit_i <- tryCatch(nlsLM(u_Neut ~ Bottom + (Top - Bottom) * plogis((DilutionLog2 - IC50) * Slope), data = data_i, start = list(Bottom = mean(c(BottomLower_i, BottomUpper_i)), Top = mean(c(TopLower_i, TopUpper_i)), IC50 = IC50Start_i, Slope = 1), lower = c(Bottom = BottomLower_i, Top = TopLower_i, IC50 = xmin, Slope = SlopeMin), upper = c(Bottom = BottomUpper_i, Top = TopUpper_i, IC50 = xmax, Slope = SlopeMax), control = nls.lm.control(maxiter = 1000)), error = function(e) NULL)
+      
+      if (is.null(fit_i)) {
+        message("Fit failed. Choose another category.")
+        next
+      }
+    }
+    
+    # Lower observed
+    if (choice == "2") {
+      
+      BottomLower_i <- max(BottomMin, minY_bound - 5)
+      BottomUpper_i <- min(BottomMax, minY_bound + 5)
+      
+      TopLower_i <- max(TopMin, maxY_bound - 5)
+      TopUpper_i <- TopMax
+      
+      midpoint_i <- ((BottomLower_i + BottomUpper_i) / 2 +
+                       (TopLower_i + TopUpper_i) / 2) / 2
+      
+      IC50Start_i <- data_i$DilutionLog2[
+        which.min(abs(data_i$u_Neut - midpoint_i))
+      ]
+      
+      IC50Start_i <- pmin(pmax(IC50Start_i, IC50Min), IC50Max)
+      
+      fit_i <- tryCatch(nlsLM(u_Neut ~ Bottom + (Top - Bottom) * plogis((DilutionLog2 - IC50) * Slope), data = data_i, start = list(Bottom = mean(c(BottomLower_i, BottomUpper_i)), Top = mean(c(TopLower_i, TopUpper_i)), IC50 = IC50Start_i, Slope = 1), lower = c(Bottom = BottomLower_i, Top = TopLower_i, IC50 = IC50Min, Slope = SlopeMin), upper = c(Bottom = BottomUpper_i, Top = TopUpper_i, IC50 = IC50Max, Slope = SlopeMax), control = nls.lm.control(maxiter = 1000)), error = function(e) NULL)
+      
+      if (is.null(fit_i)) {
+        message("Fit failed. Choose another category.")
+        next
+      }
+    }
+    
+    # Upper observed
+    if (choice == "3") {
+      
+      BottomLower_i <- BottomMin
+      BottomUpper_i <- min(BottomMax, minY_bound + 5)
+      
+      TopLower_i <- max(TopMin, maxY_bound - 5)
+      TopUpper_i <- min(TopMax, maxY_bound + 5)
+      
+      midpoint_i <- ((BottomLower_i + BottomUpper_i) / 2 +
+                       (TopLower_i + TopUpper_i) / 2) / 2
+      
+      IC50Start_i <- data_i$DilutionLog2[
+        which.min(abs(data_i$u_Neut - midpoint_i))
+      ]
+      
+      IC50Start_i <- pmin(pmax(IC50Start_i, IC50Min), IC50Max)
+      
+      fit_i <- tryCatch(nlsLM(u_Neut ~ Bottom + (Top - Bottom) * plogis((DilutionLog2 - IC50) * Slope), data = data_i, start = list(Bottom = mean(c(BottomLower_i, BottomUpper_i)), Top = mean(c(TopLower_i, TopUpper_i)), IC50 = IC50Start_i, Slope = 1), lower = c(Bottom = BottomLower_i, Top = TopLower_i, IC50 = IC50Min, Slope = SlopeMin), upper = c(Bottom = BottomUpper_i, Top = TopUpper_i, IC50 = IC50Max, Slope = SlopeMax), control = nls.lm.control(maxiter = 1000)), error = function(e) NULL)
+      
+      if (is.null(fit_i)) {
+        message("Fit failed. Choose another category.")
+        next
+      }
     }
     
     break
   }
   
   if (choice == "1") {
-    curve_parameters$Verdict[i] <- "Curved"
-    curve_parameters$Lower[i] <- fit_summary$Bottom[i]
-    curve_parameters$Upper[i] <- fit_summary$Top[i]
-    curve_parameters$IC50[i] <- fit_summary$IC50[i]
-    curve_parameters$Slope[i] <- fit_summary$Slope[i]
+    
+    coefs <- coef(fit_i)
+    
+    curve_parameters$Category[i] <- "Fully observed"
+    curve_parameters$Lower[i] <- unname(coefs["Bottom"])
+    curve_parameters$Upper[i] <- unname(coefs["Top"])
+    curve_parameters$IC50[i] <- unname(coefs["IC50"])
+    curve_parameters$Slope[i] <- unname(coefs["Slope"])
   }
   
   if (choice == "2") {
-    intercept_i <- unname(coef(lm(u_Neut ~ 1, data = data_i))[1])
     
-    curve_parameters$Verdict[i] <- "Flattened"
-    curve_parameters$Lower[i] <- intercept_i
-    curve_parameters$Upper[i] <- intercept_i
-    curve_parameters$IC50[i] <- NA_real_
-    curve_parameters$Slope[i] <- 0
+    coefs <- coef(fit_i)
+    
+    curve_parameters$Category[i] <- "Lower observed"
+    curve_parameters$Lower[i] <- unname(coefs["Bottom"])
+    curve_parameters$Upper[i] <- unname(coefs["Top"])
+    curve_parameters$IC50[i] <- unname(coefs["IC50"])
+    curve_parameters$Slope[i] <- unname(coefs["Slope"])
   }
   
   if (choice == "3") {
-    curve_parameters$Verdict[i] <- "Flattened"
+    
+    coefs <- coef(fit_i)
+    
+    curve_parameters$Category[i] <- "Upper observed"
+    curve_parameters$Lower[i] <- unname(coefs["Bottom"])
+    curve_parameters$Upper[i] <- unname(coefs["Top"])
+    curve_parameters$IC50[i] <- unname(coefs["IC50"])
+    curve_parameters$Slope[i] <- unname(coefs["Slope"])
+  }
+  
+  if (choice == "4") {
+    
+    curve_parameters$Category[i] <- "Flattened low"
+    curve_parameters$Lower[i] <- 0
+    curve_parameters$Upper[i] <- 0
+    curve_parameters$IC50[i] <- -4
+    curve_parameters$Slope[i] <- 0
+  }
+  
+  if (choice == "5") {
+    
+    curve_parameters$Category[i] <- "Flattened high"
     curve_parameters$Lower[i] <- 100
     curve_parameters$Upper[i] <- 100
-    curve_parameters$IC50[i] <- NA_real_
+    curve_parameters$IC50[i] <- -20
     curve_parameters$Slope[i] <- 0
   }
 }
+
+# ----- 1.4. Save Fits ----------------------------------------------------------
+
+curve_parameters <- curve_parameters %>%
+  mutate(across(c(Lower, Upper, IC50, Slope), ~ round(.x, 4)))
+
+write_csv(curve_parameters, here("data", "IC50_fits.csv"))

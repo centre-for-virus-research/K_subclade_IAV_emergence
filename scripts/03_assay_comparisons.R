@@ -39,7 +39,7 @@ theme_base <- theme_bw() +
 # ----- 1.1. Format Data -------------------------------------------------------
 
 data_neut <- read_csv(here("data", "neutralisation_75.csv"))
-data_fits <- read_csv(here("data", "IC50_fits.csv"), col_types = cols(SampleID = col_character()))
+data_fits <- read_csv(here("data", "IC50_fits.csv"), col_types = cols(SampleID = col_character())) %>% filter(!grepl("H3", SampleID))
 data_meta <- read_csv(here("data", "sample_metadata.csv"), col_types = cols(SampleID = col_character()))
 
 data_neut <- data_neut %>% group_by(SampleID, Virus) %>%
@@ -61,13 +61,13 @@ x <- seq(-14, 0, length.out = 500)
 IC50s <- seq(-12, -2, 1)
 
 plot_data <- expand_grid(x = x, IC50 = IC50s) %>%
-  mutate(Mean = 100 / (1 + 2^(mean_Slope * (IC50 - x))))
+  mutate(Mean = 100 * plogis((x - IC50) * mean_Slope))
 
 plot_data$IC50 <- factor(plot_data$IC50, levels = IC50s, labels = paste0("1:", 2^abs(IC50s)))
 
 shifts <- seq(-3.5, 3.5, 1)
 
-bracket_points <- tibble(x = log2(1), y = 100 / (1 + 2^(mean_Slope * shifts)))
+bracket_points <- tibble(x = log2(1), y = 100 * plogis(-mean_Slope * shifts))
 
 p1 <- ggplot(plot_data, aes(x = x, y = Mean, group = IC50, colour = IC50)) +
   geom_line(linewidth = 1) +
@@ -86,7 +86,9 @@ p1 <- ggplot(plot_data, aes(x = x, y = Mean, group = IC50, colour = IC50)) +
 
 # ----- 1.3. Delta to Foldchange Function --------------------------------------
 
-log2_shift <- function(p1, p2) {abs((log2(p1 / (1 - p1)) - log2(p2 / (1 - p2))) / mean_Slope)}
+log2_shift <- function(p1, p2) {abs((qlogis(p1) - qlogis(p2)) / mean_Slope)}
+
+fold_change <- function(p1, p2) {2^log2_shift(p1, p2)}
 
 log2_shift(0.742, 0.538)
 2^log2_shift(0.742, 0.538)
@@ -146,15 +148,12 @@ plots
 data_comp$Virus <- factor(data_comp$Virus, levels = c("THA22", "ENG24", "ENG25"))
 
 data_comp$vacc_group <- ifelse(data_comp$vacc_years_since_last == ">4", ">4",
-                              ifelse(data_comp$vacc_years_since_last == "1", "1", "2-4"))
+                               ifelse(data_comp$vacc_years_since_last == "1", "1", "2-4"))
 
 data_comp$vacc_group <- factor(data_comp$vacc_group, levels = c(">4", "2-4", "1"))
 
 data_comp <- mutate(data_comp, Age_policy = cut(Age, breaks = c(18, 50, 65, Inf), right = FALSE,
-                                    labels = c("18-49", "50-64", "65+")))
-
-data_comp$IC50 <- ifelse(data_comp$Verdict == "Flattened",
-                         ifelse(data_comp$Lower < 50, -4, -12), data_comp$IC50)
+                                                labels = c("18-49", "50-64", "65+")))
 
 data_comp <- data_comp %>%
   mutate(VirusVacc = interaction(Virus, vacc_group, sep = " × "))
@@ -164,9 +163,6 @@ p4 <- ggplot(data_comp) +
   theme_base +
   theme(axis.text.x = element_blank(),
         aspect.ratio = 1/2) +
-  # y is -IC50 = log2(dilution), so a break at 4 is a titre of 1:16. The labels
-  # must therefore ascend with the breaks (they were previously reversed, which
-  # printed 1:4096 against the 1:16 tick and vice versa).
   scale_y_continuous(limits = c(3, 12), breaks = seq(4, 12, 2), minor_breaks = seq(4, 13, 1), guide = guide_axis(minor.ticks = TRUE),
                      labels = paste0("1:", 2^seq(4, 12, 2))) +
   scale_fill_manual(values = c("#4677AA", "#DECC76", "#CC6476"),
@@ -179,7 +175,7 @@ p4
 
 # ----- 2.2. Model Fit and Contrasts -------------------------------------------
 
-model_IC50 <- lm(IC50 ~ Virus +  vacc_group + Virus * vacc_group, data = data_comp)
+model_IC50 <- lm(IC50 ~ Virus + vacc_group + Virus * vacc_group, data = data_comp)
 
 summary(model_IC50)
 
@@ -194,4 +190,3 @@ emm_vacc_virus <- emmeans(model_IC50, ~ vacc_group | Virus, type = "response", w
 emm_vacc_virus
 
 contrast(emm_vacc_virus, method = "pairwise")
-
